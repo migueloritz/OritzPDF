@@ -35,18 +35,41 @@ async def upload_document(
     Maximum file size: 32MB
     """
     try:
+        # Validate file input
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        
+        # Get file size from file object or estimate
+        file_size = 0
+        if hasattr(file, 'size') and file.size is not None:
+            file_size = file.size
+        else:
+            # Read file to get size (this consumes the stream)
+            file_content = await file.read()
+            file_size = len(file_content)
+            # Reset file pointer for later reading
+            await file.seek(0)
+        
+        # Validate content type
+        content_type = file.content_type or "application/octet-stream"
+        
         # Create upload request
         upload_request = DocumentUploadRequest(
             filename=file.filename,
-            content_type=file.content_type,
-            file_size=file.size or 0
+            content_type=content_type,
+            file_size=file_size
         )
         
         # Create document record
         document = await service.create_document(upload_request)
         
-        # Read file content
-        file_content = await file.read()
+        # Read file content if not already read
+        if 'file_content' not in locals():
+            file_content = await file.read()
+        
+        # Validate file content
+        if not file_content:
+            raise HTTPException(status_code=400, detail="File content is empty")
         
         # Process document in background
         background_tasks.add_task(
@@ -65,6 +88,13 @@ async def upload_document(
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        # Ensure file is properly closed
+        if hasattr(file, 'close'):
+            try:
+                await file.close()
+            except Exception as close_error:
+                logger.warning(f"Error closing uploaded file: {close_error}")
 
 
 @router.get("/{document_id}", response_model=Document)
@@ -95,6 +125,20 @@ async def get_document_content(
     - page_start: Starting page number (1-indexed)
     - page_end: Ending page number (inclusive)
     """
+    # Validate document ID
+    if not document_id or not isinstance(document_id, str):
+        raise HTTPException(status_code=400, detail="Invalid document ID")
+    
+    # Validate page parameters
+    if page_start is not None and page_start < 1:
+        raise HTTPException(status_code=400, detail="page_start must be greater than 0")
+    
+    if page_end is not None and page_end < 1:
+        raise HTTPException(status_code=400, detail="page_end must be greater than 0")
+    
+    if page_start is not None and page_end is not None and page_start > page_end:
+        raise HTTPException(status_code=400, detail="page_start cannot be greater than page_end")
+    
     content = await service.get_document_content(document_id)
     
     if not content:
@@ -115,6 +159,8 @@ async def get_document_content(
         # Reconstruct full text from filtered pages
         if filtered_pages:
             content.full_text = "\n".join([p.text for p in filtered_pages])
+        else:
+            content.full_text = ""
     
     return content
 

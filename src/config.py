@@ -53,6 +53,28 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
     
+    def validate_jwt_secret(self) -> None:
+        """Validate JWT secret key security"""
+        if self.JWT_SECRET_KEY == "your-secret-key-here":
+            import warnings
+            warnings.warn(
+                "Using default JWT secret key in production is insecure. "
+                "Please set a strong, random JWT_SECRET_KEY in production.",
+                SecurityWarning
+            )
+        
+        if len(self.JWT_SECRET_KEY) < 32:
+            import warnings
+            warnings.warn(
+                "JWT secret key should be at least 32 characters long for security.",
+                SecurityWarning
+            )
+    
+    @property 
+    def is_development(self) -> bool:
+        """Check if running in development mode"""
+        return self.DEBUG or self.LOG_LEVEL == "DEBUG"
+    
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
     
@@ -76,6 +98,15 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.validate_jwt_secret()
+
+
+class SecurityWarning(UserWarning):
+    """Custom warning for security-related configuration issues"""
+    pass
 
 
 @lru_cache()

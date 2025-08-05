@@ -42,53 +42,88 @@ class PyMuPDFProcessor(PDFProcessor):
     
     async def extract_text(self, file_path: str) -> Tuple[str, List[ExtractedText]]:
         """Extract text using PyMuPDF"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
+        doc = None
         try:
             doc = fitz.open(file_path)
             full_text = ""
             pages = []
             
             for page_num, page in enumerate(doc):
-                text = page.get_text()
-                full_text += text + "\n"
-                
-                # Get text with bounding boxes
-                blocks = page.get_text("dict")
-                page_data = ExtractedText(
-                    page_number=page_num + 1,
-                    text=text,
-                    confidence=0.95  # PyMuPDF doesn't provide confidence
-                )
-                pages.append(page_data)
+                try:
+                    text = page.get_text()
+                    if text:  # Only add non-empty text
+                        full_text += text + "\n"
+                    
+                    # Get text with bounding boxes
+                    blocks = page.get_text("dict")
+                    page_data = ExtractedText(
+                        page_number=page_num + 1,
+                        text=text,
+                        confidence=0.95  # PyMuPDF doesn't provide confidence
+                    )
+                    pages.append(page_data)
+                except Exception as page_error:
+                    logger.warning(f"Failed to extract text from page {page_num + 1}: {page_error}")
+                    # Add empty page data to maintain page numbering
+                    pages.append(ExtractedText(
+                        page_number=page_num + 1,
+                        text="",
+                        confidence=0.0
+                    ))
             
-            doc.close()
             return full_text.strip(), pages
             
         except Exception as e:
-            logger.error(f"PyMuPDF text extraction failed: {e}")
+            logger.error(f"PyMuPDF text extraction failed for {file_path}: {e}")
             raise
+        finally:
+            if doc:
+                try:
+                    doc.close()
+                except Exception as close_error:
+                    logger.warning(f"Error closing PyMuPDF document: {close_error}")
     
     async def extract_metadata(self, file_path: str) -> DocumentMetadata:
         """Extract metadata using PyMuPDF"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
+        doc = None
         try:
             doc = fitz.open(file_path)
             metadata = doc.metadata
             
+            # Validate and parse metadata safely
+            title = metadata.get("title", "").strip() if metadata.get("title") else None
+            author = metadata.get("author", "").strip() if metadata.get("author") else None
+            subject = metadata.get("subject", "").strip() if metadata.get("subject") else None
+            keywords_str = metadata.get("keywords", "")
+            keywords = [k.strip() for k in keywords_str.split(",") if k.strip()] if keywords_str else None
+            
             result = DocumentMetadata(
-                title=metadata.get("title"),
-                author=metadata.get("author"),
-                subject=metadata.get("subject"),
-                keywords=metadata.get("keywords", "").split(",") if metadata.get("keywords") else None,
+                title=title,
+                author=author,
+                subject=subject,
+                keywords=keywords,
                 creation_date=self._parse_date(metadata.get("creationDate")),
                 modification_date=self._parse_date(metadata.get("modDate")),
                 pages=doc.page_count
             )
             
-            doc.close()
             return result
             
         except Exception as e:
-            logger.error(f"PyMuPDF metadata extraction failed: {e}")
+            logger.error(f"PyMuPDF metadata extraction failed for {file_path}: {e}")
             raise
+        finally:
+            if doc:
+                try:
+                    doc.close()
+                except Exception as close_error:
+                    logger.warning(f"Error closing PyMuPDF document: {close_error}")
     
     async def extract_tables(self, file_path: str) -> List[Dict[str, Any]]:
         """Extract tables using PyMuPDF"""
@@ -110,46 +145,74 @@ class PyMuPDFProcessor(PDFProcessor):
     
     async def extract_images(self, file_path: str) -> List[Dict[str, Any]]:
         """Extract images using PyMuPDF"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
         images = []
+        doc = None
         try:
             doc = fitz.open(file_path)
             
             for page_num, page in enumerate(doc):
-                image_list = page.get_images()
-                
-                for img_index, img in enumerate(image_list):
-                    xref = img[0]
-                    pix = fitz.Pixmap(doc, xref)
+                try:
+                    image_list = page.get_images()
                     
-                    images.append({
-                        "page": page_num + 1,
-                        "index": img_index,
-                        "width": pix.width,
-                        "height": pix.height,
-                        "colorspace": pix.colorspace.name,
-                        "xref": xref
-                    })
-                    
-                    pix = None  # Free memory
+                    for img_index, img in enumerate(image_list):
+                        xref = img[0]
+                        try:
+                            pix = fitz.Pixmap(doc, xref)
+                            
+                            images.append({
+                                "page": page_num + 1,
+                                "index": img_index,
+                                "width": pix.width,
+                                "height": pix.height,
+                                "colorspace": pix.colorspace.name if pix.colorspace else "unknown",
+                                "xref": xref
+                            })
+                            
+                            # Free memory immediately
+                            pix = None
+                        except Exception as img_error:
+                            logger.warning(f"Failed to process image {img_index} on page {page_num + 1}: {img_error}")
+                            continue
+                            
+                except Exception as page_error:
+                    logger.warning(f"Failed to extract images from page {page_num + 1}: {page_error}")
+                    continue
             
-            doc.close()
             return images
             
         except Exception as e:
-            logger.error(f"PyMuPDF image extraction failed: {e}")
-            return []
+            logger.error(f"PyMuPDF image extraction failed for {file_path}: {e}")
+            return []  # Return empty list instead of raising for non-critical errors
+        finally:
+            if doc:
+                try:
+                    doc.close()
+                except Exception as close_error:
+                    logger.warning(f"Error closing PyMuPDF document: {close_error}")
     
     def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse PDF date string"""
-        if not date_str:
+        """Parse PDF date string safely"""
+        if not date_str or not isinstance(date_str, str):
             return None
         try:
             # PDF date format: D:YYYYMMDDHHmmSSOHH'mm
             if date_str.startswith("D:"):
                 date_str = date_str[2:]
-            # Simple parsing - can be enhanced
-            return datetime.strptime(date_str[:8], "%Y%m%d")
-        except:
+            
+            # Handle different date format lengths
+            if len(date_str) >= 8:
+                # Try basic YYYYMMDD format first
+                date_part = date_str[:8]
+                if date_part.isdigit():
+                    return datetime.strptime(date_part, "%Y%m%d")
+            
+            # If that fails, try more flexible parsing
+            return None
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Could not parse date string '{date_str}': {e}")
             return None
 
 
@@ -158,43 +221,78 @@ class PyPDFProcessor(PDFProcessor):
     
     async def extract_text(self, file_path: str) -> Tuple[str, List[ExtractedText]]:
         """Extract text using pypdf"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
         try:
             reader = PdfReader(file_path)
             full_text = ""
             pages = []
             
             for page_num, page in enumerate(reader.pages):
-                text = page.extract_text()
-                full_text += text + "\n"
-                
-                page_data = ExtractedText(
-                    page_number=page_num + 1,
-                    text=text,
-                    confidence=0.90  # pypdf doesn't provide confidence
-                )
-                pages.append(page_data)
+                try:
+                    text = page.extract_text()
+                    if text:  # Only add non-empty text
+                        full_text += text + "\n"
+                    
+                    page_data = ExtractedText(
+                        page_number=page_num + 1,
+                        text=text,
+                        confidence=0.90  # pypdf doesn't provide confidence
+                    )
+                    pages.append(page_data)
+                except Exception as page_error:
+                    logger.warning(f"Failed to extract text from page {page_num + 1}: {page_error}")
+                    # Add empty page data to maintain page numbering
+                    pages.append(ExtractedText(
+                        page_number=page_num + 1,
+                        text="",
+                        confidence=0.0
+                    ))
             
             return full_text.strip(), pages
             
         except Exception as e:
-            logger.error(f"pypdf text extraction failed: {e}")
+            logger.error(f"pypdf text extraction failed for {file_path}: {e}")
             raise
     
     async def extract_metadata(self, file_path: str) -> DocumentMetadata:
         """Extract metadata using pypdf"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
         try:
             reader = PdfReader(file_path)
             info = reader.metadata
             
+            # Safely extract metadata with validation
+            title = info.get("/Title")
+            if title and isinstance(title, str):
+                title = title.strip() or None
+            else:
+                title = None
+                
+            author = info.get("/Author")
+            if author and isinstance(author, str):
+                author = author.strip() or None
+            else:
+                author = None
+                
+            subject = info.get("/Subject")
+            if subject and isinstance(subject, str):
+                subject = subject.strip() or None
+            else:
+                subject = None
+            
             return DocumentMetadata(
-                title=info.get("/Title"),
-                author=info.get("/Author"),
-                subject=info.get("/Subject"),
+                title=title,
+                author=author,
+                subject=subject,
                 pages=len(reader.pages)
             )
             
         except Exception as e:
-            logger.error(f"pypdf metadata extraction failed: {e}")
+            logger.error(f"pypdf metadata extraction failed for {file_path}: {e}")
             raise
     
     async def extract_tables(self, file_path: str) -> List[Dict[str, Any]]:
@@ -230,43 +328,78 @@ class PDFPlumberProcessor(PDFProcessor):
     
     async def extract_text(self, file_path: str) -> Tuple[str, List[ExtractedText]]:
         """Extract text using pdfplumber"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
         try:
             full_text = ""
             pages = []
             
             with pdfplumber.open(file_path) as pdf:
                 for page_num, page in enumerate(pdf.pages):
-                    text = page.extract_text() or ""
-                    full_text += text + "\n"
-                    
-                    page_data = ExtractedText(
-                        page_number=page_num + 1,
-                        text=text,
-                        confidence=0.92
-                    )
-                    pages.append(page_data)
+                    try:
+                        text = page.extract_text() or ""
+                        if text:  # Only add non-empty text
+                            full_text += text + "\n"
+                        
+                        page_data = ExtractedText(
+                            page_number=page_num + 1,
+                            text=text,
+                            confidence=0.92
+                        )
+                        pages.append(page_data)
+                    except Exception as page_error:
+                        logger.warning(f"Failed to extract text from page {page_num + 1}: {page_error}")
+                        # Add empty page data to maintain page numbering
+                        pages.append(ExtractedText(
+                            page_number=page_num + 1,
+                            text="",
+                            confidence=0.0
+                        ))
             
             return full_text.strip(), pages
             
         except Exception as e:
-            logger.error(f"pdfplumber text extraction failed: {e}")
+            logger.error(f"pdfplumber text extraction failed for {file_path}: {e}")
             raise
     
     async def extract_metadata(self, file_path: str) -> DocumentMetadata:
         """Extract metadata using pdfplumber"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
         try:
             with pdfplumber.open(file_path) as pdf:
-                metadata = pdf.metadata
+                metadata = pdf.metadata or {}
+                
+                # Safely extract metadata with validation
+                title = metadata.get("Title")
+                if title and isinstance(title, str):
+                    title = title.strip() or None
+                else:
+                    title = None
+                    
+                author = metadata.get("Author")
+                if author and isinstance(author, str):
+                    author = author.strip() or None
+                else:
+                    author = None
+                    
+                subject = metadata.get("Subject")
+                if subject and isinstance(subject, str):
+                    subject = subject.strip() or None
+                else:
+                    subject = None
                 
                 return DocumentMetadata(
-                    title=metadata.get("Title"),
-                    author=metadata.get("Author"),
-                    subject=metadata.get("Subject"),
+                    title=title,
+                    author=author,
+                    subject=subject,
                     pages=len(pdf.pages)
                 )
                 
         except Exception as e:
-            logger.error(f"pdfplumber metadata extraction failed: {e}")
+            logger.error(f"pdfplumber metadata extraction failed for {file_path}: {e}")
             raise
     
     async def extract_tables(self, file_path: str) -> List[Dict[str, Any]]:

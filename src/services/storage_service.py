@@ -50,29 +50,75 @@ class LocalStorageService(StorageService):
     
     async def save_file(self, file_content: bytes, filename: str) -> str:
         """Save file to local filesystem"""
+        if not file_content or not isinstance(file_content, bytes):
+            raise ValueError("Invalid file content provided")
+        
+        if not filename or not isinstance(filename, str):
+            raise ValueError("Invalid filename provided")
+        
+        filename = filename.strip()
+        if not filename:
+            raise ValueError("Filename cannot be empty")
+        
         file_path = self._generate_path(filename)
         
         try:
+            # Ensure parent directory exists
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(file_content)
             
-            logger.info(f"File saved: {file_path}")
+            # Verify the file was written correctly
+            if not file_path.exists():
+                raise IOError(f"File was not created successfully: {file_path}")
+            
+            actual_size = file_path.stat().st_size
+            if actual_size != len(file_content):
+                raise IOError(f"File size mismatch. Expected {len(file_content)}, got {actual_size}")
+            
+            logger.info(f"File saved successfully: {file_path} ({actual_size} bytes)")
             return str(file_path)
         except Exception as e:
-            logger.error(f"Failed to save file: {e}")
+            logger.error(f"Failed to save file {filename}: {e}")
+            # Clean up partial file if it exists
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to cleanup partial file {file_path}: {cleanup_error}")
             raise
     
     async def get_file(self, storage_path: str) -> bytes:
         """Read file from local filesystem"""
+        if not storage_path or not isinstance(storage_path, str):
+            raise ValueError("Invalid storage path provided")
+        
+        storage_path = storage_path.strip()
+        if not storage_path:
+            raise ValueError("Storage path cannot be empty")
+        
+        file_path = Path(storage_path)
+        
         try:
-            async with aiofiles.open(storage_path, 'rb') as f:
+            if not file_path.exists():
+                raise FileNotFoundError(f"File not found: {storage_path}")
+            
+            if not file_path.is_file():
+                raise ValueError(f"Path is not a file: {storage_path}")
+            
+            async with aiofiles.open(file_path, 'rb') as f:
                 content = await f.read()
+            
+            if not content:
+                logger.warning(f"File is empty: {storage_path}")
+            
             return content
         except FileNotFoundError:
             logger.error(f"File not found: {storage_path}")
             raise
         except Exception as e:
-            logger.error(f"Failed to read file: {e}")
+            logger.error(f"Failed to read file {storage_path}: {e}")
             raise
     
     async def delete_file(self, storage_path: str) -> bool:
