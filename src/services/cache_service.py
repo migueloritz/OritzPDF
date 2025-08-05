@@ -31,19 +31,38 @@ class CacheService:
     async def connect(self):
         """Connect to Redis"""
         if not self._redis:
-            self._redis = await redis.from_url(self.redis_url, decode_responses=True)
-            logger.info("Connected to Redis cache")
+            try:
+                self._redis = await redis.from_url(self.redis_url, decode_responses=True)
+                # Test the connection
+                await self._redis.ping()
+                logger.info("Connected to Redis cache")
+            except Exception as e:
+                logger.error(f"Failed to connect to Redis: {e}")
+                self._redis = None
+                raise ConnectionError(f"Unable to connect to Redis cache: {e}")
     
     async def disconnect(self):
         """Disconnect from Redis"""
         if self._redis:
-            await self._redis.close()
-            self._redis = None
-            logger.info("Disconnected from Redis cache")
+            try:
+                await self._redis.close()
+                logger.info("Disconnected from Redis cache")
+            except Exception as e:
+                logger.warning(f"Error during Redis disconnect: {e}")
+            finally:
+                self._redis = None
     
     async def _ensure_connected(self):
         """Ensure Redis connection is established"""
         if not self._redis:
+            await self.connect()
+        
+        # Test connection health
+        try:
+            await self._redis.ping()
+        except Exception as e:
+            logger.warning(f"Redis connection lost, attempting reconnect: {e}")
+            self._redis = None
             await self.connect()
     
     def _get_key(self, prefix: str, identifier: str) -> str:
@@ -52,8 +71,12 @@ class CacheService:
     
     async def get(self, key: str) -> Optional[str]:
         """Get value from cache"""
-        await self._ensure_connected()
+        if not key or not isinstance(key, str):
+            logger.warning("Invalid cache key provided")
+            return None
+        
         try:
+            await self._ensure_connected()
             value = await self._redis.get(key)
             if value:
                 logger.debug(f"Cache hit: {key}")
@@ -61,16 +84,28 @@ class CacheService:
                 logger.debug(f"Cache miss: {key}")
             return value
         except Exception as e:
-            logger.error(f"Cache get error: {e}")
+            logger.error(f"Cache get error for key '{key}': {e}")
             return None
     
     async def set(self, key: str, value: Any, ttl: int = None) -> bool:
         """Set value in cache with TTL"""
-        await self._ensure_connected()
+        if not key or not isinstance(key, str):
+            logger.warning("Invalid cache key provided")
+            return False
+        
+        if ttl is not None and (not isinstance(ttl, int) or ttl < 0):
+            logger.warning(f"Invalid TTL value: {ttl}")
+            ttl = None
+        
         try:
+            await self._ensure_connected()
             # Convert to JSON if not string
             if not isinstance(value, str):
-                value = json.dumps(value)
+                try:
+                    value = json.dumps(value, default=str)  # Handle datetime and other types
+                except (TypeError, ValueError) as json_error:
+                    logger.error(f"Failed to serialize value for cache key '{key}': {json_error}")
+                    return False
             
             if ttl:
                 await self._redis.setex(key, ttl, value)
@@ -80,7 +115,7 @@ class CacheService:
             logger.debug(f"Cache set: {key}")
             return True
         except Exception as e:
-            logger.error(f"Cache set error: {e}")
+            logger.error(f"Cache set error for key '{key}': {e}")
             return False
     
     async def delete(self, key: str) -> bool:

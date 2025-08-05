@@ -31,27 +31,54 @@ class DocumentService:
     
     async def validate_upload(self, filename: str, file_size: int, content_type: str) -> None:
         """Validate file upload parameters"""
+        # Validate filename
+        if not filename or not isinstance(filename, str):
+            raise ValueError("Invalid filename provided")
+        
+        filename = filename.strip()
+        if not filename:
+            raise ValueError("Filename cannot be empty")
+        
+        # Check for potentially dangerous file extensions
+        dangerous_extensions = {'.exe', '.bat', '.cmd', '.scr', '.pif', '.com'}
+        extension = Path(filename).suffix.lower()
+        if extension in dangerous_extensions:
+            raise ValueError(f"File type '{extension}' is not allowed for security reasons")
+        
         # Check file size
+        if not isinstance(file_size, int) or file_size < 0:
+            raise ValueError("Invalid file size")
+        
+        if file_size == 0:
+            raise ValueError("File cannot be empty")
+        
         if file_size > settings.max_file_size_bytes:
-            raise ValueError(f"File size exceeds maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB")
+            raise ValueError(f"File size {file_size} bytes exceeds maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB")
         
         # Check file type
-        extension = Path(filename).suffix.lower()[1:]  # Remove the dot
-        if extension not in settings.supported_formats_list:
-            raise ValueError(f"File type '{extension}' not supported. Supported formats: {settings.SUPPORTED_FORMATS}")
+        if not extension:
+            raise ValueError("File must have a valid extension")
+        
+        extension_name = extension[1:]  # Remove the dot
+        if extension_name not in settings.supported_formats_list:
+            raise ValueError(f"File type '{extension_name}' not supported. Supported formats: {settings.SUPPORTED_FORMATS}")
         
         # Additional content type validation
+        if not content_type or not isinstance(content_type, str):
+            logger.warning(f"Missing or invalid content type for file {filename}")
+            return  # Don't fail on missing content type, just warn
+        
         expected_types = {
             'pdf': ['application/pdf'],
             'docx': ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'txt': ['text/plain'],
+            'txt': ['text/plain', 'text/x-plain'],
             'csv': ['text/csv', 'application/csv'],
-            'html': ['text/html'],
+            'html': ['text/html', 'application/xhtml+xml'],
             'xlsx': ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
         }
         
-        if extension in expected_types and content_type not in expected_types[extension]:
-            logger.warning(f"Unexpected content type {content_type} for {extension} file")
+        if extension_name in expected_types and content_type not in expected_types[extension_name]:
+            logger.warning(f"Unexpected content type {content_type} for {extension_name} file {filename}")
     
     async def create_document(self, upload_request: DocumentUploadRequest) -> Document:
         """Create a new document record"""
@@ -83,7 +110,18 @@ class DocumentService:
     
     async def process_document(self, document_id: str, file_content: bytes) -> Document:
         """Process uploaded document"""
+        if not document_id or not isinstance(document_id, str):
+            raise ValueError("Invalid document ID")
+        
+        if not file_content or not isinstance(file_content, bytes):
+            raise ValueError("Invalid file content")
+        
+        if len(file_content) == 0:
+            raise ValueError("File content is empty")
+        
         start_time = time.time()
+        document = None
+        temp_file_path = None
         
         try:
             # Get document record
@@ -103,8 +141,12 @@ class DocumentService:
             # await self.db.update_document(document)
             
             # Save file to storage
-            storage_path = await self.storage.save_file(file_content, document.filename)
-            document.storage_path = storage_path
+            try:
+                storage_path = await self.storage.save_file(file_content, document.filename)
+                document.storage_path = storage_path
+            except Exception as storage_error:
+                logger.error(f"Failed to save file to storage for document {document_id}: {storage_error}")
+                raise ValueError(f"Storage operation failed: {storage_error}")
             
             # Process based on file type
             if document.file_type == DocumentType.PDF:
@@ -116,15 +158,21 @@ class DocumentService:
                 
                 # Cache the processed content
                 if self.cache:
-                    await self.cache.set_document_content(document_id, content)
+                    try:
+                        await self.cache.set_document_content(document_id, content)
+                    except Exception as cache_error:
+                        logger.warning(f"Failed to cache document content for {document_id}: {cache_error}")
+                        # Don't fail processing due to cache errors
             
             elif document.file_type == DocumentType.DOCX:
                 # TODO: Implement DOCX processor
-                pass
+                logger.warning(f"DOCX processing not yet implemented for document {document_id}")
+                raise NotImplementedError("DOCX processing not yet implemented")
             
             elif document.file_type == DocumentType.TXT:
                 # TODO: Implement TXT processor
-                pass
+                logger.warning(f"TXT processing not yet implemented for document {document_id}")
+                raise NotImplementedError("TXT processing not yet implemented")
             
             else:
                 raise ValueError(f"Unsupported file type: {document.file_type}")
@@ -137,9 +185,19 @@ class DocumentService:
             
         except Exception as e:
             logger.error(f"Document processing failed for {document_id}: {e}")
-            document.status = DocumentStatus.FAILED
-            document.error_message = str(e)
-            document.processing_time = time.time() - start_time
+            if document:
+                document.status = DocumentStatus.FAILED
+                document.error_message = str(e)
+                document.processing_time = time.time() - start_time
+            
+            # Clean up storage on failure
+            if document and document.storage_path:
+                try:
+                    await self.storage.delete_file(document.storage_path)
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to cleanup storage for failed document {document_id}: {cleanup_error}")
+            
+            raise  # Re-raise the original exception
         
         # Update in database
         # await self.db.update_document(document)
