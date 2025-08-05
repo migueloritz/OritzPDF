@@ -1,0 +1,58 @@
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# PDF Processing
+PyMuPDF==1.23.8
+pypdf==3.17.4
+pdfplumber==0.10.3
+
+# OCR
+pytesseract==0.3.10
+Pillow==10.2.0
+
+# NLP and Text Processing
+transformers==4.36.2
+torch==2.1.2
+spacy==3.7.2
+nltk==3.8.1
+
+# Document Format Support
+python-docx==1.1.0
+openpyxl==3.1.2
+beautifulsoup4==4.12.3
+pandas==2.1.4
+
+# Translation
+google-cloud-translate==3.15.0
+deepl==1.16.1
+
+# Database and Storage
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+redis==5.0.1
+minio==7.2.3
+
+# API and Web
+httpx==0.26.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+
+# Storage
+aioboto3==12.3.0
+
+# Utils
+python-dotenv==1.0.0
+pyyaml==6.0.1
+psutil==5.9.8
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Development
+black==23.12.1
+flake8==7.0.0
+mypy==1.8.0
